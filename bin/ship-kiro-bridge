@@ -90,7 +90,7 @@ function runACPServer() {
   }
 
   function notify(method, params) {
-    const msg = { jsonrpc: '2.0', method, params };
+    const msg = { jsonrpc: '2.0', method, params: { ...params, sessionId } };
     process.stdout.write(JSON.stringify(msg) + '\n');
   }
 
@@ -135,7 +135,10 @@ function runACPServer() {
           if (text.trim()) {
             output += text;
             notify('session/update', {
-              update: { sessionUpdate: 'agent_message_chunk', text },
+              update: {
+                sessionUpdate: 'text_delta',
+                content: { type: 'text', text },
+              },
             });
           }
         });
