@@ -200,12 +200,15 @@ Respond with ONLY a JSON array, no markdown fences, no explanation:
 
 function acquireHangar(holder) {
   try {
+    // treehouse get --lease prints path to stdout, banners to stderr
     const result = execSync(
-      `${TREEHOUSE_BIN} get --lease --holder "${holder}"`,
-      { encoding: 'utf8', cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] }
+      `${TREEHOUSE_BIN} get --lease --lease-holder "${holder}"`,
+      { encoding: 'utf8', cwd: process.cwd() }
     ).trim();
-    // treehouse get --lease prints the path to stdout
-    return result || null;
+    // The path is the last non-empty line of stdout
+    const lines = result.split('\n').filter(l => l.trim());
+    const path = lines[lines.length - 1]?.trim();
+    return path && path.startsWith('/') ? path : null;
   } catch (e) {
     return null;
   }
