@@ -1,0 +1,93 @@
+#!/usr/bin/env node
+
+/**
+ * ship-kiro-bridge
+ * 
+ * Bridges no-mistakes ACP protocol to kiro-cli.
+ * no-mistakes calls this script with a prompt, and we spawn kiro-cli
+ * in non-interactive mode with the prompt, capturing output.
+ * 
+ * Protocol: no-mistakes passes the prompt as the last argument.
+ * We output JSON events on stdout per the ACP spec.
+ */
+
+import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
+
+const KIRO_CLI = resolve(process.env.HOME, '.local/bin/kiro-cli');
+
+// Parse args — acpx protocol: last arg after "exec" is the prompt
+const args = process.argv.slice(2);
+let cwd = process.cwd();
+let prompt = '';
+
+// Parse acpx-style args
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--cwd' && args[i + 1]) {
+    cwd = args[i + 1];
+    i++;
+  } else if (args[i] === 'exec') {
+    prompt = args.slice(i + 1).join(' ');
+    break;
+  }
+}
+
+if (!prompt) {
+  // Fallback: treat last arg as prompt
+  prompt = args[args.length - 1] || '';
+}
+
+if (!prompt) {
+  process.stderr.write('ship-kiro-bridge: no prompt provided\n');
+  process.exit(1);
+}
+
+// Spawn kiro-cli in non-interactive mode
+const kiro = spawn(KIRO_CLI, [
+  'chat',
+  prompt,
+  '--no-interactive',
+  '--trust-all-tools',
+], {
+  cwd,
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+
+let output = '';
+
+kiro.stdout.on('data', (chunk) => {
+  const text = chunk.toString();
+  output += text;
+
+  // Emit ACP-style JSON event for streaming
+  const event = {
+    method: 'notifications/session.update',
+    params: {
+      update: {
+        type: 'assistant',
+        content: text,
+      },
+    },
+  };
+  process.stdout.write(JSON.stringify(event) + '\n');
+});
+
+kiro.stderr.on('data', (chunk) => {
+  process.stderr.write(chunk);
+});
+
+kiro.on('close', (code) => {
+  // Emit final result event
+  const result = {
+    method: 'result',
+    result: {
+      content: output,
+      usage: {
+        input_tokens: 0,
+        output_tokens: Math.ceil(output.length / 4),
+      },
+    },
+  };
+  process.stdout.write(JSON.stringify(result) + '\n');
+  process.exit(code || 0);
+});
