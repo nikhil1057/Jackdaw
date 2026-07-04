@@ -164,7 +164,7 @@ async function dispatchVisual(subtasks) {
   for (let i = 0; i < hangars.length; i++) {
     const h = hangars[i];
     const script = join(scriptDir, `launch-agent-${i + 1}.sh`);
-    const content = `#!/bin/bash\ncd "${h.path}"\necho "🤖 Agent ${i + 1}: ${h.name}"\necho "📂 Hangar: ${h.path}"\necho "────────────────────────────────────────"\necho ""\nexec kiro-cli chat "${h.spec.replace(/"/g, '\\"').replace(/'/g, "'\\''")}" -a --no-interactive\n`;
+    const content = `#!/bin/bash\ncd "${h.path}"\n# Pre-accept tool trust for this worktree\nmkdir -p .kiro\necho '{"chat.disableTrustAllConfirmation": true}' > .kiro/settings.json\necho "🤖 Agent ${i + 1}: ${h.name}"\necho "📂 Hangar: ${h.path}"\necho "────────────────────────────────────────"\necho ""\nexec kiro-cli chat "${h.spec.replace(/"/g, '\\"').replace(/'/g, "'\\''")}" -a --no-interactive\n`;
     writeFileSync(script, content, { mode: 0o755 });
   }
 
