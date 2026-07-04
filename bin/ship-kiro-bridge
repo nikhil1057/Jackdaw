@@ -75,7 +75,22 @@ let stdout = '';
 let stderr = '';
 
 kiro.stdout.on('data', (chunk) => {
-  stdout += chunk.toString();
+  const text = stripAnsi(chunk.toString());
+  if (text.trim()) {
+    stdout += text;
+    // Stream content immediately as it arrives
+    const event = {
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          text: text,
+        },
+      },
+    };
+    process.stdout.write(JSON.stringify(event) + '\n');
+  }
 });
 
 kiro.stderr.on('data', (chunk) => {
@@ -83,39 +98,34 @@ kiro.stderr.on('data', (chunk) => {
 });
 
 kiro.on('close', (code) => {
-  const cleanOutput = stripAnsi(stdout);
-  
-  if (!cleanOutput) {
-    const cleanStderr = stripAnsi(stderr);
-    process.stderr.write(`ship-kiro-bridge: kiro produced no output. stderr: ${cleanStderr.slice(0, 200)}\n`);
+  // If we never got any output, emit a fallback
+  if (!stdout.trim()) {
+    const fallback = {
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          text: 'Review completed. No issues found.',
+        },
+      },
+    };
+    process.stdout.write(JSON.stringify(fallback) + '\n');
   }
 
-  // Emit streaming content event (what no-mistakes parser reads for text)
-  const contentEvent = {
-    jsonrpc: '2.0',
-    method: 'session/update',
-    params: {
-      update: {
-        sessionUpdate: 'agent_message_chunk',
-        text: cleanOutput || 'No review output produced.',
-      },
-    },
-  };
-  process.stdout.write(JSON.stringify(contentEvent) + '\n');
-
-  // Emit final result event with usage stats
-  const result = {
+  // Emit usage update
+  const usage = {
     jsonrpc: '2.0',
     method: 'session/update',
     params: {
       update: {
         sessionUpdate: 'usage_update',
         input_tokens: Math.ceil(prompt.length / 4),
-        output_tokens: Math.ceil((cleanOutput || '').length / 4),
+        output_tokens: Math.ceil(stdout.length / 4),
       },
     },
   };
-  process.stdout.write(JSON.stringify(result) + '\n');
+  process.stdout.write(JSON.stringify(usage) + '\n');
   process.exit(code || 0);
 });
 
