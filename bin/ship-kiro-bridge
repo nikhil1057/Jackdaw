@@ -82,7 +82,7 @@ function runSimpleMode(prompt, cwd) {
 function runACPServer() {
   const rl = createInterface({ input: process.stdin });
   let sessionCwd = process.cwd();
-  let requestId = 0;
+  let sessionId = null;
 
   function respond(id, result) {
     const msg = { jsonrpc: '2.0', id, result };
@@ -110,12 +110,15 @@ function runACPServer() {
         break;
 
       case 'session/create':
-        sessionCwd = params?.workingDirectory || process.cwd();
-        respond(id, { sessionId: params?.sessionId || params?.id || 'kiro-1' });
+      case 'session/new':
+        sessionCwd = params?.workingDirectory || params?.cwd || process.cwd();
+        sessionId = params?.sessionId || params?.id || 'kiro-session';
+        respond(id, { sessionId });
         break;
 
-      case 'session/sendMessage': {
-        const prompt = params?.message?.content || params?.message || '';
+      case 'session/sendMessage':
+      case 'session/prompt': {
+        const prompt = params?.message?.content || params?.message || params?.prompt || params?.content || '';
         
         // Spawn kiro-cli with the prompt
         const kiro = spawn(KIRO_CLI, [
@@ -131,7 +134,6 @@ function runACPServer() {
           const text = stripAnsi(chunk.toString());
           if (text.trim()) {
             output += text;
-            // Stream content as session update
             notify('session/update', {
               update: { sessionUpdate: 'agent_message_chunk', text },
             });
@@ -140,7 +142,6 @@ function runACPServer() {
         kiro.stderr.on('data', () => {});
         kiro.on('close', () => {
           const finalText = output.trim() || 'Task completed.';
-          // Send final response
           respond(id, {
             message: { role: 'assistant', content: finalText },
             usage: {
@@ -151,12 +152,12 @@ function runACPServer() {
           });
         });
 
-        // Timeout
-        setTimeout(() => { kiro.kill('SIGTERM'); }, 300000); // 5 min for gnhf tasks
+        setTimeout(() => { kiro.kill('SIGTERM'); }, 300000);
         break;
       }
 
       case 'session/destroy':
+      case 'session/close':
         respond(id, {});
         break;
 
@@ -166,7 +167,7 @@ function runACPServer() {
         break;
 
       default:
-        // Unknown method — respond with empty result
+        // Unknown method — respond with empty result to not block
         if (id) respond(id, {});
         break;
     }
