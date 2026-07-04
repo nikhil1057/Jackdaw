@@ -118,7 +118,19 @@ function runACPServer() {
 
       case 'session/sendMessage':
       case 'session/prompt': {
-        const prompt = params?.message?.content || params?.message || params?.prompt || params?.content || '';
+        // prompt is an array of content blocks: [{type: "text", text: "..."}]
+        let prompt = '';
+        if (Array.isArray(params?.prompt)) {
+          prompt = params.prompt
+            .filter(b => b.type === 'text')
+            .map(b => b.text)
+            .join('\n');
+        } else {
+          prompt = params?.message?.content || params?.message || params?.prompt || '';
+        }
+        
+        // Track sessionId for notifications
+        const promptSessionId = params?.sessionId || sessionId;
         
         // Spawn kiro-cli with the prompt
         const kiro = spawn(KIRO_CLI, [
@@ -136,7 +148,7 @@ function runACPServer() {
             output += text;
             notify('session/update', {
               update: {
-                sessionUpdate: 'text_delta',
+                sessionUpdate: 'agent_message_chunk',
                 content: { type: 'text', text },
               },
             });
@@ -145,13 +157,22 @@ function runACPServer() {
         kiro.stderr.on('data', () => {});
         kiro.on('close', () => {
           const finalText = output.trim() || 'Task completed.';
+          // Send final content chunk if we have output
+          if (finalText) {
+            notify('session/update', {
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: finalText },
+              },
+            });
+          }
+          // Respond to the prompt request with stop reason
           respond(id, {
-            message: { role: 'assistant', content: finalText },
+            stopReason: 'end_turn',
             usage: {
-              input_tokens: Math.ceil(prompt.length / 4),
-              output_tokens: Math.ceil(finalText.length / 4),
+              inputTokens: Math.ceil(prompt.length / 4),
+              outputTokens: Math.ceil(finalText.length / 4),
             },
-            stopReason: 'stop',
           });
         });
 
