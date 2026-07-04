@@ -1,0 +1,6 @@
+# Ship repo - shield configuration
+# Steps: review (via kiro), skip test/lint for now (no test suite yet)
+steps:
+  test: skip
+  lint: skip
+  document: skip
