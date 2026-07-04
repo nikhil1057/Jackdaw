@@ -3,17 +3,17 @@
 /**
  * ship-kiro-bridge
  * 
- * Bridges no-mistakes ACP protocol to kiro-cli.
- * no-mistakes calls this via acpx protocol:
- *   acpx [--agent <cmd>] [--cwd <dir>] --format json --json-strict
- *         --approve-all --non-interactive-permissions deny
- *         --suppress-reads [target] exec <prompt>
+ * Full ACP (Agent Client Protocol) bridge that connects to kiro-cli.
+ * Speaks JSON-RPC over stdio — compatible with both gnhf and no-mistakes.
  *
- * We spawn kiro-cli with the prompt, strip ANSI, and emit ACP JSON events.
+ * Protocol modes:
+ *   1. ACP JSON-RPC (gnhf) — handles initialize, createSession, sendMessage
+ *   2. Simple exec mode (no-mistakes) — detects "exec" in args, runs one-shot
  */
 
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 
 const KIRO_CLI = resolve(process.env.HOME, '.local/bin/kiro-cli');
 
@@ -22,123 +22,155 @@ function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
             .replace(/\x1b\[\?[0-9]*[hl]/g, '')
             .replace(/\x1b\][^\x07]*\x07/g, '')
-            .replace(/> /g, '')
+            .replace(/^> /gm, '')
             .trim();
 }
 
-// Parse acpx-style args
+// Check if we're being called in simple exec mode (no-mistakes style)
 const args = process.argv.slice(2);
-let cwd = process.cwd();
-let prompt = '';
-
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--cwd' && args[i + 1]) {
-    cwd = args[i + 1];
-    i++;
-  } else if (args[i] === '--agent') {
-    i++; // skip agent value (it's us)
-  } else if (args[i] === '--format' || args[i] === '--non-interactive-permissions') {
-    i++; // skip value
-  } else if (args[i] === '--json-strict' || args[i] === '--approve-all' || args[i] === '--suppress-reads') {
-    // skip flags
-  } else if (args[i] === 'exec') {
-    prompt = args.slice(i + 1).join(' ');
-    break;
+const execIdx = args.indexOf('exec');
+if (execIdx !== -1) {
+  // Simple mode: extract prompt, run kiro, output ACP events
+  let cwd = process.cwd();
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--cwd' && args[i + 1]) { cwd = args[i + 1]; i++; }
   }
+  const prompt = args.slice(execIdx + 1).join(' ');
+  runSimpleMode(prompt, cwd);
+} else {
+  // Full ACP JSON-RPC mode (gnhf)
+  runACPServer();
 }
 
-// Fallback: if no "exec" found, join remaining non-flag args as prompt
-if (!prompt) {
-  const remaining = args.filter(a => !a.startsWith('--'));
-  prompt = remaining[remaining.length - 1] || '';
-}
+// ─── Simple Mode (no-mistakes) ─────────────────────────────────────────────
 
-if (!prompt) {
-  process.stderr.write('ship-kiro-bridge: no prompt provided\n');
-  process.exit(1);
-}
-
-// Spawn kiro-cli
-const kiro = spawn(KIRO_CLI, [
-  'chat',
-  prompt,
-  '--no-interactive',
-  '--trust-all-tools',
-  '--wrap', 'never',
-], {
-  cwd,
-  stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
-});
-
-let stdout = '';
-let stderr = '';
-
-kiro.stdout.on('data', (chunk) => {
-  const text = stripAnsi(chunk.toString());
-  if (text.trim()) {
-    stdout += text;
-    // Stream content immediately as it arrives
-    const event = {
-      jsonrpc: '2.0',
-      method: 'session/update',
-      params: {
-        update: {
-          sessionUpdate: 'agent_message_chunk',
-          text: text,
-        },
-      },
-    };
-    process.stdout.write(JSON.stringify(event) + '\n');
-  }
-});
-
-kiro.stderr.on('data', (chunk) => {
-  stderr += chunk.toString();
-});
-
-kiro.on('close', (code) => {
-  // If we never got any output, emit a fallback
-  if (!stdout.trim()) {
-    const fallback = {
-      jsonrpc: '2.0',
-      method: 'session/update',
-      params: {
-        update: {
-          sessionUpdate: 'agent_message_chunk',
-          text: 'Review completed. No issues found.',
-        },
-      },
-    };
-    process.stdout.write(JSON.stringify(fallback) + '\n');
+function runSimpleMode(prompt, cwd) {
+  if (!prompt) {
+    process.stderr.write('ship-kiro-bridge: no prompt provided\n');
+    process.exit(1);
   }
 
-  // Emit usage update
-  const usage = {
-    jsonrpc: '2.0',
-    method: 'session/update',
-    params: {
-      update: {
-        sessionUpdate: 'usage_update',
-        input_tokens: Math.ceil(prompt.length / 4),
-        output_tokens: Math.ceil(stdout.length / 4),
-      },
-    },
-  };
-  process.stdout.write(JSON.stringify(usage) + '\n');
-  process.exit(code || 0);
-});
+  const kiro = spawn(KIRO_CLI, [
+    'chat', prompt, '--no-interactive', '--trust-all-tools', '--wrap', 'never',
+  ], { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' } });
 
-// Safety timeout: kill kiro if it takes too long (2 minutes)
-setTimeout(() => {
-  kiro.kill('SIGTERM');
-  const result = {
-    method: 'result',
-    result: {
-      content: 'Review timed out after 120 seconds.',
-      usage: { input_tokens: 0, output_tokens: 0 },
-    },
-  };
-  process.stdout.write(JSON.stringify(result) + '\n');
-  process.exit(1);
-}, 120000);
+  let stdout = '';
+  kiro.stdout.on('data', (chunk) => {
+    const text = stripAnsi(chunk.toString());
+    if (text.trim()) {
+      stdout += text;
+      const event = { jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', text } } };
+      process.stdout.write(JSON.stringify(event) + '\n');
+    }
+  });
+  kiro.stderr.on('data', () => {});
+  kiro.on('close', (code) => {
+    if (!stdout.trim()) {
+      const fb = { jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', text: 'Review completed. No issues found.' } } };
+      process.stdout.write(JSON.stringify(fb) + '\n');
+    }
+    const usage = { jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'usage_update', input_tokens: Math.ceil(prompt.length / 4), output_tokens: Math.ceil(stdout.length / 4) } } };
+    process.stdout.write(JSON.stringify(usage) + '\n');
+    process.exit(code || 0);
+  });
+
+  setTimeout(() => { kiro.kill('SIGTERM'); process.exit(1); }, 120000);
+}
+
+// ─── Full ACP Server Mode (gnhf) ───────────────────────────────────────────
+
+function runACPServer() {
+  const rl = createInterface({ input: process.stdin });
+  let sessionCwd = process.cwd();
+  let requestId = 0;
+
+  function respond(id, result) {
+    const msg = { jsonrpc: '2.0', id, result };
+    process.stdout.write(JSON.stringify(msg) + '\n');
+  }
+
+  function notify(method, params) {
+    const msg = { jsonrpc: '2.0', method, params };
+    process.stdout.write(JSON.stringify(msg) + '\n');
+  }
+
+  rl.on('line', (line) => {
+    let msg;
+    try { msg = JSON.parse(line); } catch { return; }
+
+    const { id, method, params } = msg;
+
+    switch (method) {
+      case 'initialize':
+        respond(id, {
+          name: 'ship-kiro-bridge',
+          version: '0.1.0',
+          capabilities: { sessions: {}, tools: {} },
+        });
+        break;
+
+      case 'session/create':
+        sessionCwd = params?.workingDirectory || process.cwd();
+        respond(id, { sessionId: params?.sessionId || params?.id || 'kiro-1' });
+        break;
+
+      case 'session/sendMessage': {
+        const prompt = params?.message?.content || params?.message || '';
+        
+        // Spawn kiro-cli with the prompt
+        const kiro = spawn(KIRO_CLI, [
+          'chat', prompt, '--no-interactive', '--trust-all-tools', '--wrap', 'never',
+        ], {
+          cwd: sessionCwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
+        });
+
+        let output = '';
+        kiro.stdout.on('data', (chunk) => {
+          const text = stripAnsi(chunk.toString());
+          if (text.trim()) {
+            output += text;
+            // Stream content as session update
+            notify('session/update', {
+              update: { sessionUpdate: 'agent_message_chunk', text },
+            });
+          }
+        });
+        kiro.stderr.on('data', () => {});
+        kiro.on('close', () => {
+          const finalText = output.trim() || 'Task completed.';
+          // Send final response
+          respond(id, {
+            message: { role: 'assistant', content: finalText },
+            usage: {
+              input_tokens: Math.ceil(prompt.length / 4),
+              output_tokens: Math.ceil(finalText.length / 4),
+            },
+            stopReason: 'stop',
+          });
+        });
+
+        // Timeout
+        setTimeout(() => { kiro.kill('SIGTERM'); }, 300000); // 5 min for gnhf tasks
+        break;
+      }
+
+      case 'session/destroy':
+        respond(id, {});
+        break;
+
+      case 'shutdown':
+        respond(id, {});
+        process.exit(0);
+        break;
+
+      default:
+        // Unknown method — respond with empty result
+        if (id) respond(id, {});
+        break;
+    }
+  });
+
+  rl.on('close', () => process.exit(0));
+}

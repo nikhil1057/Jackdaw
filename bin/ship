@@ -2,13 +2,14 @@
 
 import { hangar } from '../packages/hangar/index.js';
 import { shield } from '../packages/shield/index.js';
+import { nightshift } from '../packages/nightshift/index.js';
 
 const [,, command, ...args] = process.argv;
 
 const commands = {
   hangar,
   shield,
-  // nightshift,  ← Day 3
+  nightshift,
   // officer,     ← Day 4
 };
 

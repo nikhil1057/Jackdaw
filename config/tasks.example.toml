@@ -1,0 +1,15 @@
+# Nightshift Task Queue
+# Each [[task]] is picked up sequentially by an agent overnight.
+# The agent uses Kiro CLI in non-interactive mode.
+
+[[task]]
+name = "Add README with project description and usage"
+spec = "Create a comprehensive README.md for the ship project. Include: what it is (Multi-Agent SDLC Command Center), installation steps (brew install engines + npm link), usage examples for each command (hangar, shield, nightshift, officer), and architecture overview."
+
+[[task]]
+name = "Add input validation to ship CLI"
+spec = "Add input validation to bin/ship - handle edge cases like unknown commands gracefully, validate that subcommands exist before calling handlers, add colored error messages."
+
+[[task]]
+name = "Create SKILL.md for hangar"
+spec = "Create skills/hangar/SKILL.md that teaches Kiro agents how to use ship hangar commands. Include: when to get a worktree, how to return it, how to check status. Follow the agent skills spec format with name and description in YAML frontmatter."
