@@ -1,5 +1,6 @@
 import { execSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { showBanner } from '../shared/banners.js';
 
 const TREEHOUSE_BIN = findTreehouse();
 

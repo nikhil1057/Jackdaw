@@ -1,5 +1,6 @@
 import { execSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { showBanner } from '../shared/banners.js';
 
 const NO_MISTAKES_BIN = findNoMistakes();
 
@@ -50,7 +51,9 @@ export function shield(args) {
     push: () => {
       // Push through the shield gate (renamed remote)
       const branch = rest[0] || getCurrentBranch();
-      console.log('🛡️  Shield — validating before push...\n');
+      console.log('');
+      showBanner('shield');
+      console.log('  Validating before push...\n');
       const result = spawn('git', ['push', 'shield', branch], {
         stdio: ['inherit', 'pipe', 'pipe'],
         cwd: process.cwd(),
@@ -78,7 +81,7 @@ export function shield(args) {
         }
       });
       result.on('close', (code) => {
-        if (code === 0) console.log('\n🛡️  Shield passed. Code shipped.');
+        if (code === 0) console.log('\n  ✓ Shield passed. Code shipped.\n');
         process.exit(code);
       });
     },
