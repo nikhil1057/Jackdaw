@@ -50,12 +50,13 @@ export function officer(args) {
 
   Options:
     --agents <n>         Number of parallel agents (default: auto-split)
+    --visual, -v         Open tmux panes — watch agents work live
     --no-split           Don't split — run the same task in one agent
 
   Examples:
     ship officer dispatch "Add Redis caching to eligibility endpoint"
+    ship officer dispatch "Build auth" --agents 3 --visual
     ship officer dispatch "Fix all lint errors" --no-split
-    ship officer dispatch "Build auth module" --agents 3
 
   How it works:
     1. Kiro splits your task into independent subtasks
@@ -86,12 +87,13 @@ async function dispatch(args) {
 
   // Parse options
   const noSplit = args.includes('--no-split');
+  const visual = args.includes('--visual') || args.includes('-v');
   const agentsIdx = args.indexOf('--agents');
   const maxAgents = agentsIdx !== -1 ? parseInt(args[agentsIdx + 1]) : null;
   
   // Get the prompt (everything that's not a flag)
   const prompt = args
-    .filter((a, i) => !a.startsWith('--') && (i === 0 || !args[i-1]?.startsWith('--')))
+    .filter((a, i) => !a.startsWith('--') && !a.startsWith('-') && (i === 0 || !args[i-1]?.startsWith('--')))
     .join(' ');
 
   if (!prompt) {
@@ -116,6 +118,99 @@ async function dispatch(args) {
   });
   console.log('');
 
+  if (visual) {
+    await dispatchVisual(subtasks);
+  } else {
+    await dispatchBackground(subtasks);
+  }
+}
+
+// ─── Visual Dispatch (tmux — see agents work in panes) ──────────────────────
+
+async function dispatchVisual(subtasks) {
+  // Check tmux is available
+  try {
+    execSync('which tmux', { stdio: 'pipe' });
+  } catch {
+    console.error('  ❌ tmux not found. Install: brew install tmux');
+    console.error('     Or use without --visual for background mode.');
+    process.exit(1);
+  }
+
+  const sessionName = `ship-crew-${Date.now()}`;
+  
+  // Acquire hangars first
+  const hangars = [];
+  for (let i = 0; i < subtasks.length; i++) {
+    console.log(`  🏗️  [${i + 1}/${subtasks.length}] Acquiring hangar for: ${subtasks[i].name}`);
+    const hangarPath = acquireHangar(`officer-${i + 1}`);
+    if (!hangarPath) {
+      console.error(`  ❌ Failed to acquire hangar for task ${i + 1}`);
+      continue;
+    }
+    console.log(`  ✓  Hangar: ${hangarPath}`);
+    hangars.push({ ...subtasks[i], path: hangarPath, index: i + 1 });
+  }
+
+  if (hangars.length === 0) {
+    console.error('  ❌ No hangars acquired. Aborting.');
+    process.exit(1);
+  }
+
+  // Create tmux session with first agent
+  const first = hangars[0];
+  const kiroCmd = `cd "${first.path}" && kiro-cli chat "${first.spec.replace(/"/g, '\\"')}" --trust-all-tools`;
+  
+  execSync(`tmux new-session -d -s "${sessionName}" -n "agent-1" "${kiroCmd}"`, { stdio: 'pipe' });
+
+  // Add panes for remaining agents
+  for (let i = 1; i < hangars.length; i++) {
+    const h = hangars[i];
+    const cmd = `cd "${h.path}" && kiro-cli chat "${h.spec.replace(/"/g, '\\"')}" --trust-all-tools`;
+    execSync(`tmux split-window -t "${sessionName}" "${cmd}"`, { stdio: 'pipe' });
+    execSync(`tmux select-layout -t "${sessionName}" tiled`, { stdio: 'pipe' });
+  }
+
+  // Set tmux options for better visibility
+  execSync(`tmux set-option -t "${sessionName}" pane-border-status top`, { stdio: 'pipe' });
+  execSync(`tmux set-option -t "${sessionName}" pane-border-format " agent-#{pane_index} "`, { stdio: 'pipe' });
+
+  console.log(`
+  🚀 Crew dispatched in tmux session: ${sessionName}
+
+  ┌─────────────────────────────────────────────────┐
+  │  ${hangars.length} Kiro agents working in parallel             │
+  │  Each agent has its own hangar (worktree)       │
+  │  You can WATCH them work live!                  │
+  └─────────────────────────────────────────────────┘
+
+  To attach and watch:
+    tmux attach -t ${sessionName}
+
+  Inside tmux:
+    Ctrl+B then arrow keys → switch between agent panes
+    Ctrl+B then d          → detach (agents keep running)
+    Ctrl+B then z          → zoom into one pane
+
+  When done:
+    ship hangar status     → see results
+    ship shield push       → validate and push
+`);
+
+  // Attach automatically
+  const attach = spawn('tmux', ['attach', '-t', sessionName], {
+    stdio: 'inherit',
+  });
+  attach.on('close', () => {
+    console.log(`\n  ✓ Detached from crew session.`);
+    console.log(`  Re-attach anytime: tmux attach -t ${sessionName}`);
+    console.log(`  Kill session: tmux kill-session -t ${sessionName}\n`);
+  });
+}
+
+// ─── Background Dispatch (original headless mode) ────────────────────────────
+
+async function dispatchBackground(subtasks) {
   // Acquire hangars and spawn agents
   const agents = [];
   for (let i = 0; i < subtasks.length; i++) {
@@ -138,8 +233,6 @@ async function dispatch(args) {
   // Monitor agents
   await monitorAgents(agents);
 }
-
-// ─── Task Splitting ─────────────────────────────────────────────────────────
 
 function splitTask(prompt, maxAgents) {
   return new Promise((resolve) => {
