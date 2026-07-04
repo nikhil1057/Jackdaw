@@ -86,19 +86,32 @@ kiro.on('close', (code) => {
   const cleanOutput = stripAnsi(stdout);
   
   if (!cleanOutput) {
-    // If no stdout, try stderr for useful output
     const cleanStderr = stripAnsi(stderr);
     process.stderr.write(`ship-kiro-bridge: kiro produced no output. stderr: ${cleanStderr.slice(0, 200)}\n`);
   }
 
-  // Emit ACP JSON result event
+  // Emit streaming content event (what no-mistakes parser reads for text)
+  const contentEvent = {
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        text: cleanOutput || 'No review output produced.',
+      },
+    },
+  };
+  process.stdout.write(JSON.stringify(contentEvent) + '\n');
+
+  // Emit final result event with usage stats
   const result = {
-    method: 'result',
-    result: {
-      content: cleanOutput || 'No review output produced.',
-      usage: {
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      update: {
+        sessionUpdate: 'usage_update',
         input_tokens: Math.ceil(prompt.length / 4),
-        output_tokens: Math.ceil(cleanOutput.length / 4),
+        output_tokens: Math.ceil((cleanOutput || '').length / 4),
       },
     },
   };
