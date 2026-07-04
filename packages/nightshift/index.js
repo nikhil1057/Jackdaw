@@ -31,9 +31,42 @@ function ensureEngine() {
 function run(args) {
   ensureEngine();
   const result = spawn(GNHF_BIN, args, {
-    stdio: 'inherit',
+    stdio: ['inherit', 'pipe', 'inherit'],
     cwd: process.cwd(),
   });
+  
+  let tuiEnded = false;
+  
+  result.stdout.on('data', (chunk) => {
+    const text = chunk.toString();
+    
+    // Detect when TUI ends (alternate screen exit)
+    if (text.includes('\x1b[?1049l')) {
+      tuiEnded = true;
+    }
+    
+    // During TUI, pass everything through raw
+    if (!tuiEnded) {
+      process.stdout.write(chunk);
+      return;
+    }
+    
+    // After TUI, filter the summary output
+    const lines = text.split('\n');
+    for (const line of lines) {
+      // Skip gnhf/no-mistakes branding
+      if (line.includes('no-mistakes') || 
+          line.includes('kunchenguid') ||
+          line.includes('gh pr create') ||
+          line.includes('too much') ||
+          line.includes('to review?') ||
+          line.match(/g\s*n\s*h\s*f/) && line.includes('·')) continue;
+      // Replace "gnhf" with "nightshift" in remaining output
+      const cleaned = line.replace(/gnhf/g, 'nightshift');
+      process.stdout.write(cleaned + '\n');
+    }
+  });
+  
   result.on('close', (code) => process.exit(code));
 }
 
