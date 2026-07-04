@@ -4,11 +4,12 @@
  * ship-kiro-bridge
  * 
  * Bridges no-mistakes ACP protocol to kiro-cli.
- * no-mistakes calls this script with a prompt, and we spawn kiro-cli
- * in non-interactive mode with the prompt, capturing output.
- * 
- * Protocol: no-mistakes passes the prompt as the last argument.
- * We output JSON events on stdout per the ACP spec.
+ * no-mistakes calls this via acpx protocol:
+ *   acpx [--agent <cmd>] [--cwd <dir>] --format json --json-strict
+ *         --approve-all --non-interactive-permissions deny
+ *         --suppress-reads [target] exec <prompt>
+ *
+ * We spawn kiro-cli with the prompt, strip ANSI, and emit ACP JSON events.
  */
 
 import { spawn } from 'node:child_process';
@@ -16,25 +17,40 @@ import { resolve } from 'node:path';
 
 const KIRO_CLI = resolve(process.env.HOME, '.local/bin/kiro-cli');
 
-// Parse args — acpx protocol: last arg after "exec" is the prompt
+// Strip ANSI escape codes
+function stripAnsi(str) {
+  return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+            .replace(/\x1b\[\?[0-9]*[hl]/g, '')
+            .replace(/\x1b\][^\x07]*\x07/g, '')
+            .replace(/> /g, '')
+            .trim();
+}
+
+// Parse acpx-style args
 const args = process.argv.slice(2);
 let cwd = process.cwd();
 let prompt = '';
 
-// Parse acpx-style args
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--cwd' && args[i + 1]) {
     cwd = args[i + 1];
     i++;
+  } else if (args[i] === '--agent') {
+    i++; // skip agent value (it's us)
+  } else if (args[i] === '--format' || args[i] === '--non-interactive-permissions') {
+    i++; // skip value
+  } else if (args[i] === '--json-strict' || args[i] === '--approve-all' || args[i] === '--suppress-reads') {
+    // skip flags
   } else if (args[i] === 'exec') {
     prompt = args.slice(i + 1).join(' ');
     break;
   }
 }
 
+// Fallback: if no "exec" found, join remaining non-flag args as prompt
 if (!prompt) {
-  // Fallback: treat last arg as prompt
-  prompt = args[args.length - 1] || '';
+  const remaining = args.filter(a => !a.startsWith('--'));
+  prompt = remaining[remaining.length - 1] || '';
 }
 
 if (!prompt) {
@@ -42,52 +58,64 @@ if (!prompt) {
   process.exit(1);
 }
 
-// Spawn kiro-cli in non-interactive mode
+// Spawn kiro-cli
 const kiro = spawn(KIRO_CLI, [
   'chat',
   prompt,
   '--no-interactive',
   '--trust-all-tools',
+  '--wrap', 'never',
 ], {
   cwd,
   stdio: ['ignore', 'pipe', 'pipe'],
+  env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
 });
 
-let output = '';
+let stdout = '';
+let stderr = '';
 
 kiro.stdout.on('data', (chunk) => {
-  const text = chunk.toString();
-  output += text;
-
-  // Emit ACP-style JSON event for streaming
-  const event = {
-    method: 'notifications/session.update',
-    params: {
-      update: {
-        type: 'assistant',
-        content: text,
-      },
-    },
-  };
-  process.stdout.write(JSON.stringify(event) + '\n');
+  stdout += chunk.toString();
 });
 
 kiro.stderr.on('data', (chunk) => {
-  process.stderr.write(chunk);
+  stderr += chunk.toString();
 });
 
 kiro.on('close', (code) => {
-  // Emit final result event
+  const cleanOutput = stripAnsi(stdout);
+  
+  if (!cleanOutput) {
+    // If no stdout, try stderr for useful output
+    const cleanStderr = stripAnsi(stderr);
+    process.stderr.write(`ship-kiro-bridge: kiro produced no output. stderr: ${cleanStderr.slice(0, 200)}\n`);
+  }
+
+  // Emit ACP JSON result event
   const result = {
     method: 'result',
     result: {
-      content: output,
+      content: cleanOutput || 'No review output produced.',
       usage: {
-        input_tokens: 0,
-        output_tokens: Math.ceil(output.length / 4),
+        input_tokens: Math.ceil(prompt.length / 4),
+        output_tokens: Math.ceil(cleanOutput.length / 4),
       },
     },
   };
   process.stdout.write(JSON.stringify(result) + '\n');
   process.exit(code || 0);
 });
+
+// Safety timeout: kill kiro if it takes too long (2 minutes)
+setTimeout(() => {
+  kiro.kill('SIGTERM');
+  const result = {
+    method: 'result',
+    result: {
+      content: 'Review timed out after 120 seconds.',
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  };
+  process.stdout.write(JSON.stringify(result) + '\n');
+  process.exit(1);
+}, 120000);
