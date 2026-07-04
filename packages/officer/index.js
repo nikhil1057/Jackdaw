@@ -157,44 +157,51 @@ async function dispatchVisual(subtasks) {
     process.exit(1);
   }
 
+  // Write launcher scripts for each agent (avoids shell quoting issues)
+  const scriptDir = join(process.cwd(), '.ship', 'officer');
+  mkdirSync(scriptDir, { recursive: true });
+
+  for (let i = 0; i < hangars.length; i++) {
+    const h = hangars[i];
+    const script = join(scriptDir, `launch-agent-${i + 1}.sh`);
+    const content = `#!/bin/bash\ncd "${h.path}"\necho "🤖 Agent ${i + 1}: ${h.name}"\necho "📂 Hangar: ${h.path}"\necho ""\nkiro-cli chat "${h.spec.replace(/"/g, '\\"').replace(/'/g, "'\\''")}" -a\n`;
+    writeFileSync(script, content, { mode: 0o755 });
+  }
+
   // Create tmux session with first agent
-  const first = hangars[0];
-  const kiroCmd = `cd "${first.path}" && kiro-cli chat "${first.spec.replace(/"/g, '\\"')}" --trust-all-tools`;
-  
-  execSync(`tmux new-session -d -s "${sessionName}" -n "agent-1" "${kiroCmd}"`, { stdio: 'pipe' });
+  execSync(`tmux new-session -d -s "${sessionName}" -n "agent-1" "bash ${scriptDir}/launch-agent-1.sh"`, { stdio: 'pipe' });
 
   // Add panes for remaining agents
   for (let i = 1; i < hangars.length; i++) {
-    const h = hangars[i];
-    const cmd = `cd "${h.path}" && kiro-cli chat "${h.spec.replace(/"/g, '\\"')}" --trust-all-tools`;
-    execSync(`tmux split-window -t "${sessionName}" "${cmd}"`, { stdio: 'pipe' });
+    execSync(`tmux split-window -t "${sessionName}" "bash ${scriptDir}/launch-agent-${i + 1}.sh"`, { stdio: 'pipe' });
     execSync(`tmux select-layout -t "${sessionName}" tiled`, { stdio: 'pipe' });
   }
 
   // Set tmux options for better visibility
-  execSync(`tmux set-option -t "${sessionName}" pane-border-status top`, { stdio: 'pipe' });
-  execSync(`tmux set-option -t "${sessionName}" pane-border-format " agent-#{pane_index} "`, { stdio: 'pipe' });
+  try {
+    execSync(`tmux set-option -t "${sessionName}" pane-border-status top`, { stdio: 'pipe' });
+    execSync(`tmux set-option -t "${sessionName}" pane-border-format " 🤖 agent-#{pane_index} "`, { stdio: 'pipe' });
+  } catch {}
 
   console.log(`
   🚀 Crew dispatched in tmux session: ${sessionName}
 
   ┌─────────────────────────────────────────────────┐
   │  ${hangars.length} Kiro agents working in parallel             │
-  │  Each agent has its own hangar (worktree)       │
+  │  Each has its own hangar (worktree)             │
   │  You can WATCH them work live!                  │
   └─────────────────────────────────────────────────┘
 
-  To attach and watch:
-    tmux attach -t ${sessionName}
-
+  To watch:   tmux attach -t ${sessionName}
+  
   Inside tmux:
-    Ctrl+B then arrow keys → switch between agent panes
-    Ctrl+B then d          → detach (agents keep running)
-    Ctrl+B then z          → zoom into one pane
+    Ctrl+B ↑↓←→  → switch panes
+    Ctrl+B z      → zoom one pane
+    Ctrl+B d      → detach (agents keep working)
 
   When done:
-    ship hangar status     → see results
-    ship shield push       → validate and push
+    ship hangar status
+    ship shield push
 `);
 
   // Attach automatically
@@ -202,9 +209,8 @@ async function dispatchVisual(subtasks) {
     stdio: 'inherit',
   });
   attach.on('close', () => {
-    console.log(`\n  ✓ Detached from crew session.`);
-    console.log(`  Re-attach anytime: tmux attach -t ${sessionName}`);
-    console.log(`  Kill session: tmux kill-session -t ${sessionName}\n`);
+    console.log(`\n  ✓ Detached from crew.`);
+    console.log(`  Re-attach: tmux attach -t ${sessionName}\n`);
   });
 }
 
