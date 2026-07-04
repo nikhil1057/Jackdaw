@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 import { hangar } from '../packages/hangar/index.js';
+import { shield } from '../packages/shield/index.js';
 
 const [,, command, ...args] = process.argv;
 
 const commands = {
   hangar,
-  // shield,      ← Day 2
+  shield,
   // nightshift,  ← Day 3
   // officer,     ← Day 4
 };
