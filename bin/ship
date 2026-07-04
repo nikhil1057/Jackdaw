@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+
+import { hangar } from '../packages/hangar/index.js';
+
+const [,, command, ...args] = process.argv;
+
+const commands = {
+  hangar,
+  // shield,      ← Day 2
+  // nightshift,  ← Day 3
+  // officer,     ← Day 4
+};
+
+function printUsage() {
+  console.log(`
+  ship — Multi-Agent SDLC Command Center
+
+  Usage:
+    ship hangar get          Acquire a worktree for an agent
+    ship hangar status       Show all worktrees and their status
+    ship hangar return       Release current worktree back to pool
+
+    ship shield push         Validate and push (coming soon)
+    ship nightshift start    Start overnight agent loop (coming soon)
+    ship officer dispatch    Split and dispatch to parallel agents (coming soon)
+
+  Options:
+    --help                   Show this help
+    --version                Show version
+`);
+}
+
+if (!command || command === '--help') {
+  printUsage();
+  process.exit(0);
+}
+
+if (command === '--version') {
+  console.log('ship v0.1.0');
+  process.exit(0);
+}
+
+const handler = commands[command];
+if (!handler) {
+  console.error(`Unknown command: ${command}`);
+  console.error(`Run 'ship --help' for usage.`);
+  process.exit(1);
+}
+
+handler(args);

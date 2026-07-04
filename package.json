@@ -1,0 +1,14 @@
+{
+  "name": "ship",
+  "version": "0.1.0",
+  "description": "Multi-Agent SDLC Command Center",
+  "bin": {
+    "ship": "./bin/ship"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node bin/ship"
+  },
+  "author": "Nikhil Tiwari",
+  "license": "MIT"
+}
