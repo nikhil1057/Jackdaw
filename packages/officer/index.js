@@ -125,20 +125,26 @@ async function dispatch(args) {
   }
 }
 
-// ─── Visual Dispatch (tmux — see agents work in panes) ──────────────────────
+// ─── Visual Dispatch (opens new terminal tabs — works from inside Kiro) ─────
 
 async function dispatchVisual(subtasks) {
-  // Check tmux is available
+  // Check if wezterm cli is available (preferred) or fall back to tmux
+  let useWezterm = false;
   try {
-    execSync('which tmux', { stdio: 'pipe' });
-  } catch {
-    console.error('  ❌ tmux not found. Install: brew install tmux');
-    console.error('     Or use without --visual for background mode.');
-    process.exit(1);
+    execSync('wezterm cli list', { stdio: 'pipe' });
+    useWezterm = true;
+  } catch {}
+
+  if (!useWezterm) {
+    try {
+      execSync('which tmux', { stdio: 'pipe' });
+    } catch {
+      console.error('  ❌ Neither WezTerm nor tmux found.');
+      console.error('     Install WezTerm or tmux for visual mode.');
+      process.exit(1);
+    }
   }
 
-  const sessionName = `ship-crew-${Date.now()}`;
-  
   // Acquire hangars first
   const hangars = [];
   for (let i = 0; i < subtasks.length; i++) {
@@ -157,61 +163,60 @@ async function dispatchVisual(subtasks) {
     process.exit(1);
   }
 
-  // Write launcher scripts for each agent (avoids shell quoting issues)
+  // Write launcher scripts for each agent
   const scriptDir = join(process.cwd(), '.ship', 'officer');
   mkdirSync(scriptDir, { recursive: true });
 
   for (let i = 0; i < hangars.length; i++) {
     const h = hangars[i];
     const script = join(scriptDir, `launch-agent-${i + 1}.sh`);
-    const content = `#!/bin/bash\ncd "${h.path}"\n# Pre-accept tool trust for this worktree\nmkdir -p .kiro\necho '{"chat.disableTrustAllConfirmation": true}' > .kiro/settings.json\necho "🤖 Agent ${i + 1}: ${h.name}"\necho "📂 Hangar: ${h.path}"\necho "────────────────────────────────────────"\necho ""\nexec kiro-cli chat "${h.spec.replace(/"/g, '\\"').replace(/'/g, "'\\''")}" -a --no-interactive\n`;
+    const content = `#!/bin/bash\ncd "${h.path}"\n# Pre-accept tool trust\nmkdir -p .kiro\necho '{"chat.disableTrustAllConfirmation": true}' > .kiro/settings.json\necho "🤖 Agent ${i + 1}: ${h.name}"\necho "📂 Hangar: ${h.path}"\necho "────────────────────────────────────────"\necho ""\nexec kiro-cli chat "${h.spec.replace(/"/g, '\\"').replace(/'/g, "'\\''")}" -a --no-interactive\n`;
     writeFileSync(script, content, { mode: 0o755 });
   }
 
-  // Create tmux session with first agent
-  execSync(`tmux new-session -d -s "${sessionName}" -n "agent-1" "bash ${scriptDir}/launch-agent-1.sh"`, { stdio: 'pipe' });
+  if (useWezterm) {
+    // WezTerm: spawn new tabs (works from INSIDE a Kiro session!)
+    console.log(`\n  🚀 Deploying ${hangars.length} crew in new WezTerm tabs...\n`);
+    
+    for (let i = 0; i < hangars.length; i++) {
+      const script = join(scriptDir, `launch-agent-${i + 1}.sh`);
+      try {
+        const paneId = execSync(`wezterm cli spawn --cwd "${hangars[i].path}" -- bash "${script}"`, { encoding: 'utf8' }).trim();
+        execSync(`wezterm cli set-tab-title --pane-id ${paneId} "🤖 Crew ${i + 1}: ${hangars[i].name}"`, { stdio: 'pipe' });
+        console.log(`  ✓ Crew ${i + 1} deployed → Tab "${hangars[i].name}"`);
+      } catch (e) {
+        console.error(`  ❌ Failed to spawn crew ${i + 1}`);
+      }
+    }
 
-  // Add panes for remaining agents
-  for (let i = 1; i < hangars.length; i++) {
-    execSync(`tmux split-window -t "${sessionName}" "bash ${scriptDir}/launch-agent-${i + 1}.sh"`, { stdio: 'pipe' });
-    execSync(`tmux select-layout -t "${sessionName}" tiled`, { stdio: 'pipe' });
-  }
-
-  // Set tmux options for better visibility
-  try {
-    execSync(`tmux set-option -t "${sessionName}" pane-border-status top`, { stdio: 'pipe' });
-    execSync(`tmux set-option -t "${sessionName}" pane-border-format " 🤖 agent-#{pane_index} "`, { stdio: 'pipe' });
-  } catch {}
-
-  console.log(`
-  🚀 Crew dispatched in tmux session: ${sessionName}
-
-  ┌─────────────────────────────────────────────────┐
-  │  ${hangars.length} Kiro agents working in parallel             │
-  │  Each has its own hangar (worktree)             │
-  │  You can WATCH them work live!                  │
-  └─────────────────────────────────────────────────┘
-
-  To watch:   tmux attach -t ${sessionName}
+    console.log(`
+  ────────────────────────────────────────
+  All crew deployed in separate tabs.
+  Switch tabs to watch them work.
   
-  Inside tmux:
-    Ctrl+B ↑↓←→  → switch panes
-    Ctrl+B z      → zoom one pane
-    Ctrl+B d      → detach (agents keep working)
-
   When done:
-    ship hangar status
-    ship shield push
+    ship hangar status    → see results
+    ship shield push      → validate and push
+  ────────────────────────────────────────
 `);
+  } else {
+    // Fallback: tmux
+    const sessionName = `ship-crew-${Date.now()}`;
+    execSync(`tmux new-session -d -s "${sessionName}" -n "crew-1" "bash ${scriptDir}/launch-agent-1.sh"`, { stdio: 'pipe' });
+    for (let i = 1; i < hangars.length; i++) {
+      execSync(`tmux split-window -t "${sessionName}" "bash ${scriptDir}/launch-agent-${i + 1}.sh"`, { stdio: 'pipe' });
+      execSync(`tmux select-layout -t "${sessionName}" tiled`, { stdio: 'pipe' });
+    }
+    try {
+      execSync(`tmux set-option -t "${sessionName}" pane-border-status top`, { stdio: 'pipe' });
+    } catch {}
 
-  // Attach automatically
-  const attach = spawn('tmux', ['attach', '-t', sessionName], {
-    stdio: 'inherit',
-  });
-  attach.on('close', () => {
-    console.log(`\n  ✓ Detached from crew.`);
-    console.log(`  Re-attach: tmux attach -t ${sessionName}\n`);
-  });
+    console.log(`
+  🚀 Crew deployed in tmux: ${sessionName}
+  Attach: tmux attach -t ${sessionName}
+`);
+    spawn('tmux', ['attach', '-t', sessionName], { stdio: 'inherit' }).on('close', () => {});
+  }
 }
 
 // ─── Background Dispatch (original headless mode) ────────────────────────────
