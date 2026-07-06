@@ -1,4 +1,4 @@
-# Ship ⛵
+# JACKDAW ⛵
 
 **Multi-Agent SDLC Command Center for Kiro CLI**
 
